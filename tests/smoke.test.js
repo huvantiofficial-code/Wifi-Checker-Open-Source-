@@ -123,6 +123,136 @@ test('bandwidth formatting and upload payload remain deterministic', () => {
   assert.equal(payload.type, '');
 });
 
+test('upload payload supports sub-megabyte sizes for slow links', () => {
+  const { sandbox } = loadApp();
+  assert.equal(sandbox.makeBlob(0.25).size, 262144);
+  assert.equal(sandbox.makeBlob(0.125).size, 131072);
+  assert.equal(sandbox.makeBlob(1.5).size, 1572864);
+  // Auto-scaling must stay inside the configured envelope and snap to a small
+  // ladder of sizes so the payload cache cannot grow without bound.
+  assert.equal(sandbox.clampChunkMB(0), sandbox.CFG.ulChunkMinMB);
+  assert.equal(sandbox.clampChunkMB(-5), sandbox.CFG.ulChunkMinMB);
+  assert.equal(sandbox.clampChunkMB(1e6), sandbox.CFG.ulChunkMaxDesktopMB);
+  const ladder = new Set();
+  for (let mb = 0.01; mb < 500; mb *= 1.15) ladder.add(sandbox.clampChunkMB(mb));
+  assert.ok(ladder.size <= 12, `payload ladder stayed small (${ladder.size} sizes)`);
+  for (const size of ladder) {
+    assert.ok(size >= sandbox.CFG.ulChunkMinMB && size <= sandbox.CFG.ulChunkMaxDesktopMB);
+  }
+});
+
+/* Regression: xhr.upload.onprogress reports bytes accepted by the socket send
+   buffer, not bytes delivered. When the buffer swallows a whole payload the
+   progress events claim it was "uploaded" instantly, which used to inflate the
+   reported speed far above the real uplink rate. */
+test('upload speed is measured from acknowledged requests, not buffered bytes', async () => {
+  const BYTES_PER_SEC = 2 * 1048576;       // real per-connection uplink
+  const STREAMS = 2;
+  let ackedBytes = 0;
+
+  class BufferSwallowingXHR {
+    constructor() {
+      this.upload = {};
+      this.status = 0;
+      this.finished = false;
+    }
+    open() {}
+    send(body) {
+      const size = body.size;
+      // The send buffer accepts the entire body immediately.
+      if (this.upload.onprogress) this.upload.onprogress({ loaded: size, total: size });
+      // The server only answers once the bytes have really been transmitted.
+      this.timer = setTimeout(() => {
+        if (this.finished) return;
+        this.finished = true;
+        this.status = 200;
+        ackedBytes += size;
+        if (this.onloadend) this.onloadend();
+      }, (size / BYTES_PER_SEC) * 1000);
+    }
+    abort() {
+      if (this.finished) return;
+      clearTimeout(this.timer);
+      this.finished = true;
+      this.status = 0;
+      if (this.onloadend) this.onloadend();
+    }
+  }
+
+  const { sandbox, nodes } = loadApp({
+    XMLHttpRequest: BufferSwallowingXHR,
+    performance: nodePerformance
+  });
+  Object.assign(sandbox.CFG, {
+    ulSeconds: 1.2,
+    ulMaxSeconds: 4,
+    graceUl: 0.15,
+    ulStreams: STREAMS,
+    ulMinAcks: 2,
+    ulTargetRequestMs: 300,
+    ulChunkStartMB: 0.25
+  });
+
+  const startedAt = nodePerformance.now();
+  const reported = await sandbox.upload(sandbox.SERVERS[0], new AbortController().signal);
+  const wall = (nodePerformance.now() - startedAt) / 1000;
+
+  const truth = (ackedBytes * 8 * sandbox.CFG.overhead) / (wall * 1e6);
+  const inflated = (BYTES_PER_SEC * STREAMS * 8 * sandbox.CFG.overhead) / 1e6 * 2;
+
+  assert.ok(reported > 0, 'upload must produce a positive result');
+  assert.ok(
+    Math.abs(reported - truth) / truth < 0.2,
+    `reported ${reported.toFixed(2)} Mbps should track the real ${truth.toFixed(2)} Mbps`
+  );
+  assert.ok(
+    reported < inflated,
+    'reported speed must not follow instant socket-buffer progress events'
+  );
+  // The live readout is written by the sampling timer, so it tracks the final
+  // figure closely rather than matching the last digit exactly.
+  const displayed = Number.parseFloat(nodes.ulVal.textContent);
+  assert.ok(Number.isFinite(displayed) && displayed > 0, 'live upload value must be displayed');
+  assert.ok(
+    Math.abs(displayed - reported) / reported < 0.1,
+    `displayed ${displayed} should track the returned ${reported.toFixed(2)} Mbps`
+  );
+});
+
+test('upload fails cleanly when the backend never acknowledges a request', async () => {
+  class RejectingXHR {
+    constructor() { this.upload = {}; this.status = 0; this.finished = false; }
+    open() {}
+    send(body) {
+      // Bytes leave the buffer, but CORS/network failure means status stays 0.
+      if (this.upload.onprogress) this.upload.onprogress({ loaded: body.size, total: body.size });
+      this.timer = setTimeout(() => {
+        if (this.finished) return;
+        this.finished = true;
+        this.status = 0;
+        if (this.onloadend) this.onloadend();
+      }, 5);
+    }
+    abort() {
+      if (this.finished) return;
+      clearTimeout(this.timer);
+      this.finished = true;
+      this.status = 0;
+      if (this.onloadend) this.onloadend();
+    }
+  }
+
+  const { sandbox } = loadApp({ XMLHttpRequest: RejectingXHR, performance: nodePerformance });
+  Object.assign(sandbox.CFG, {
+    ulSeconds: 0.4, ulMaxSeconds: 1.5, graceUl: 0.05, ulStreams: 2
+  });
+
+  await assert.rejects(
+    () => sandbox.upload(sandbox.SERVERS[0], new AbortController().signal),
+    /upload failed/
+  );
+});
+
 test('a complete mocked test produces usable download and upload results', async () => {
   const fetch = async url => {
     if (url.includes('/meta')) {

@@ -7,13 +7,19 @@ var CFG = {
   probeTimeout: 3000,
   dlSeconds: 10,
   ulSeconds: 10,
+  ulMaxSeconds: 20,     // upload may run longer until enough requests are acknowledged
+  ulMinAcks: 2,         // acknowledged requests required for a trustworthy window
   graceDl: 1.5,
   graceUl: 2.5,
   dlStreams: 6,
   ulStreams: 3,
   chunkMB: 100,         // larger requests avoid request overhead on fast links
-  ulChunkDesktopMB: 20,
-  ulChunkMobileMB: 4,   // avoids browser memory pressure on mobile devices
+  ulChunkStartMB: 0.25, // small first payload so slow links still finish a request
+  ulChunkMinMB: 0.125,
+  ulChunkMaxDesktopMB: 64,
+  ulChunkMaxMobileMB: 16, // avoids browser memory pressure on mobile devices
+  ulTargetRequestMs: 1200, // payload auto-scales to keep requests near this duration
+  ulMaxFailures: 6,     // give up on a backend that refuses uploads
   overhead: 1.06        // TCP/IP + TLS overhead compensation (LibreSpeed default)
 };
 
@@ -221,84 +227,184 @@ async function download(s, signal) {
   return speed;
 }
 
-/* ---------- upload ---------- */
-function uploadChunkMB() {
+/* ---------- upload ----------
+   Accounting note: xhr.upload.onprogress reports bytes handed to the OS/TLS
+   socket send buffer, not bytes that reached the server. A payload that fits
+   in the send buffer is reported as "uploaded" almost instantly, so progress
+   bytes alone measure buffer-fill speed and badly overstate slow links.
+   Throughput is therefore derived from acknowledged requests only; progress
+   events are used for the live readout before the first acknowledgement. */
+function isMobileClient() {
   var ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
-  var mobile = /Android|iPhone|iPad|iPod|Windows Phone/i.test(ua) ||
-    (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1);
-  return mobile ? CFG.ulChunkMobileMB : CFG.ulChunkDesktopMB;
+  return /Android|iPhone|iPad|iPod|Windows Phone/i.test(ua) ||
+    (/Macintosh/i.test(ua) && typeof navigator !== 'undefined' && navigator.maxTouchPoints > 1);
+}
+
+function uploadMaxChunkMB() {
+  return isMobileClient() ? CFG.ulChunkMaxMobileMB : CFG.ulChunkMaxDesktopMB;
+}
+
+/* Sizes snap to a power-of-two ladder so only a handful of distinct payloads
+   are ever allocated, keeping the blob cache small. */
+function clampChunkMB(mb) {
+  var min = CFG.ulChunkMinMB, max = uploadMaxChunkMB();
+  if (!(mb > 0)) return min;
+  var step = min;
+  while (step * 2 <= mb && step * 2 <= max) step *= 2;
+  return Math.min(max, Math.max(min, step));
 }
 
 function makeBlob(mb) {
-  var chunk = new Uint8Array(1048576);
+  var bytes = Math.max(1, Math.round(mb * 1048576));
+  var chunk = new Uint8Array(Math.min(bytes, 1048576));
   if (self.crypto && self.crypto.getRandomValues) {
-    for (var o = 0; o < chunk.length; o += 65536) self.crypto.getRandomValues(chunk.subarray(o, o + 65536));
+    for (var o = 0; o < chunk.length; o += 65536) {
+      self.crypto.getRandomValues(chunk.subarray(o, Math.min(o + 65536, chunk.length)));
+    }
   }
-  var parts = [];
-  for (var i = 0; i < mb; i++) parts.push(chunk);
+  var parts = [], left = bytes;
+  while (left >= chunk.length) { parts.push(chunk); left -= chunk.length; }
+  if (left > 0) parts.push(chunk.subarray(0, left));
   // An empty MIME type keeps cross-origin POSTs simple and avoids CORS preflights.
   return new Blob(parts);
 }
 
 async function upload(s, signal) {
-  var u = urls(s).ul, blob = makeBlob(uploadChunkMB());
-  var sent = 0, graced = 0, graceDone = false, graceStart = 0;
-  var start = performance.now(), running = true, xhrs = [];
+  var u = urls(s).ul;
+  var chunkMB = clampChunkMB(CFG.ulChunkStartMB);
+  var blobs = {};
+  function payload(mb) {
+    var key = String(mb);
+    if (!blobs[key]) blobs[key] = makeBlob(mb);
+    return blobs[key];
+  }
+
+  var start = performance.now();
+  var running = true, xhrs = [], failures = 0;
+  var buffered = 0;                 // progress bytes: live readout only
+  var ackedBytes = 0;               // bytes confirmed by a server response
+  var acks = 0;
+  var graceDone = false, graceStart = 0;
+  var lanes = [];
+
+  /* Each lane sends serially, so between the start of its first counted
+     request and its last acknowledgement it was busy the whole time. Summing
+     bytes/span per lane therefore avoids both double counting and the tail
+     error from a request still in flight when the clock stops. */
+  function laneSpeed() {
+    var total = 0;
+    for (var i = 0; i < lanes.length; i++) {
+      var l = lanes[i];
+      if (l.bytes > 0 && l.lastAck > l.firstStart) {
+        total += mbps(l.bytes, (l.lastAck - l.firstStart) / 1000);
+      }
+    }
+    return total;
+  }
 
   function loop() {
+    var lane = { bytes: 0, firstStart: 0, lastAck: 0 };
+    lanes.push(lane);
     return new Promise(function (done) {
       function next() {
         if (!running) return done();
         var xhr = new XMLHttpRequest();
         xhrs.push(xhr);
+        var body = payload(chunkMB);
+        var size = body.size;
+        var sendStart = performance.now();
+        // Only whole requests transmitted inside the measurement window count.
+        var counted = graceDone && sendStart >= graceStart;
         var prev = 0;
+
         xhr.open('POST', nocache(u), true);
         xhr.upload.onprogress = function (e) {
           if (!running) return;
           var d = e.loaded - prev; prev = e.loaded;
           if (!isFinite(d) || d <= 0) return;
-          sent += d;
-          if (graceDone) graced += d;
+          buffered += d;
         };
         xhr.onloadend = function () {
           xhrs = xhrs.filter(function (x) { return x !== xhr; });
+          var ok = xhr.status >= 200 && xhr.status < 300;
+          if (ok) {
+            var now = performance.now();
+            failures = 0;
+            ackedBytes += size;
+            if (counted) {
+              if (!lane.firstStart) lane.firstStart = sendStart;
+              lane.bytes += size;
+              lane.lastAck = now;
+              acks++;
+            }
+            // Keep each request near ulTargetRequestMs so the sample rate stays
+            // useful on slow links and request overhead stays small on fast ones.
+            var seconds = (now - sendStart) / 1000;
+            if (seconds > 0) {
+              var mbPerSec = (size / 1048576) / seconds;
+              chunkMB = clampChunkMB(mbPerSec * (CFG.ulTargetRequestMs / 1000));
+            }
+          } else if (xhr.status === 0) {
+            failures++;
+          }
           if (!running) { done(); return; }
+          if (failures >= CFG.ulMaxFailures) { running = false; done(); return; }
           // Avoid a tight retry loop when a backend or its CORS policy is unavailable.
           if (xhr.status === 0) setTimeout(next, 200);
           else next();
         };
-        xhr.send(blob);
+        xhr.send(body);
       }
       next();
     });
   }
 
+  var streams = [];
   for (var i = 0; i < CFG.ulStreams; i++) {
-    loop();
+    streams.push(loop());
     await wait(100, signal);
     if (signal && signal.aborted) break;
   }
 
+  function liveSpeed() {
+    var measured = laneSpeed();
+    if (measured > 0) return measured;
+    // Provisional: no acknowledgement yet, so fall back to buffered progress.
+    var el = (performance.now() - start) / 1000;
+    return el > 0 ? mbps(buffered, el) : 0;
+  }
+
   var timer = setInterval(function () {
     var el = (performance.now() - start) / 1000;
-    if (!graceDone && el >= CFG.graceUl) { graceDone = true; graced = 0; graceStart = performance.now(); }
+    if (!graceDone && el >= CFG.graceUl) { graceDone = true; graceStart = performance.now(); }
     if (graceDone) {
-      var live = mbps(graced, (performance.now() - graceStart) / 1000);
+      var live = liveSpeed();
       setLive('Upload', live);
       $('ulVal').textContent = fmt(live);
     }
     setProgress(57.5 + Math.min(1, el / CFG.ulSeconds) * 42.5);
   }, 150);
 
+  // Run the nominal duration, then keep going briefly until enough whole
+  // requests have been acknowledged for the window to mean something.
   await wait(Math.max(0, CFG.ulSeconds * 1000 - (performance.now() - start)), signal);
-  var end = performance.now();
+  while (running && !(signal && signal.aborted) &&
+         acks < CFG.ulMinAcks &&
+         (performance.now() - start) < CFG.ulMaxSeconds * 1000) {
+    await wait(150, signal);
+  }
+
   running = false;
   clearInterval(timer);
   xhrs.forEach(function (x) { try { x.abort(); } catch (e) {} });
+  await Promise.all(streams);
   if (signal && signal.aborted) throw new Error('aborted');
-  var measuredSeconds = graceDone ? (end - graceStart) / 1000 : 0;
-  var speed = mbps(graced, measuredSeconds);
-  if (!(speed > 0)) speed = mbps(sent, (end - start) / 1000);
+
+  var speed = laneSpeed();
+  if (!(speed > 0) && ackedBytes > 0) {
+    // Nothing completed inside the window: use every acknowledged byte instead.
+    speed = mbps(ackedBytes, (performance.now() - start) / 1000);
+  }
   if (!(speed > 0)) throw new Error('upload failed');
   return speed;
 }
