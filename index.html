@@ -1,132 +1,61 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Global Speed Tester - Real-Time Wifi & Internet Checker</title>
-  
-  <!-- Import Work Sans from Google Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Work+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  
-  <!-- Link our Google UI stylesheet -->
-  <link rel="stylesheet" href="style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Speed Test</title>
+<meta name="description" content="Open source internet speed test — download, upload, ping, jitter.">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-  <div class="container">
-    
-    <!-- Header Section -->
-    <div class="header">
-      <h1>Internet Speed Test <span class="badge">Real Server</span></h1>
-      <p>Bypasses local BDIX loops to measure your true international bandwidth</p>
-    </div>
+<main class="wrap">
+  <header class="top">
+    <h1>Speed Test</h1>
+    <select id="serverSel" aria-label="Server"></select>
+  </header>
 
-    <!-- Speed Tester Card -->
-    <div class="speedtest-card" id="speedCard">
-      
-      <!-- Top Status Gauge -->
-      <div class="gauge-section">
-        <div class="gauge-container">
-          <!-- circular SVG gauge speedometer -->
-          <svg class="gauge-svg" viewBox="0 0 200 200">
-            <!-- Background circle track -->
-            <circle class="gauge-bg-circle" cx="100" cy="100" r="90" />
-            <!-- Active speed arc -->
-            <circle class="gauge-fill-circle" id="gaugeFillCircle" cx="100" cy="100" r="90" />
-          </svg>
-          
-          <div class="gauge-inner-content">
-            <span class="gauge-speed-value" id="speedValue">0.0</span>
-            <span class="gauge-speed-unit" id="speedUnit">Mbps</span>
-          </div>
-        </div>
-        
-        <div class="gauge-status-label" id="statusLabel">Ready to test connection</div>
-      </div>
-
-      <!-- Live metrics display grid -->
-      <div class="metrics-grid">
-        <!-- Latency Column -->
-        <div class="metric-col">
-          <div class="metric-title">
-            <span class="pulse-dot" id="dotPing"></span>
-            Ping
-          </div>
-          <div class="metric-value"><span id="valPing">--</span> <span style="font-size: 13px; font-weight: 500; color: var(--text-light);">ms</span></div>
-          <div class="metric-subvalue" id="valJitter">Jitter: -- ms</div>
-        </div>
-        
-        <!-- Download Speed Column -->
-        <div class="metric-col">
-          <div class="metric-title">
-            <span class="pulse-dot" id="dotDownload"></span>
-            Download
-          </div>
-          <div class="metric-value" id="valDownload">--</div>
-          <div class="metric-subvalue">Mbps</div>
-        </div>
-        
-        <!-- Upload Speed Column -->
-        <div class="metric-col">
-          <div class="metric-title">
-            <span class="pulse-dot" id="dotUpload"></span>
-            Upload
-          </div>
-          <div class="metric-value" id="valUpload">--</div>
-          <div class="metric-subvalue">Mbps</div>
-        </div>
-      </div>
-
-      <!-- Real-World Server status bar -->
-      <div class="server-bar">
-        <div class="server-info">
-          <span class="server-icon"></span>
-          <span class="server-label">Test Endpoint:</span>
-          <span id="serverName" style="font-weight: 600;">Global CDN Edges</span>
-        </div>
-        <div style="font-size: 11px; font-weight: 600; color: var(--google-blue);">100% SECURE</div>
-      </div>
-
-      <!-- RUN SPEED TEST Action Button -->
-      <div class="actions">
-        <button class="btn-primary" id="btnStart">Run Speed Test</button>
-      </div>
-
-    </div>
-
-    <!-- Collapsible detailed summary and insights -->
-    <div class="info-panel" id="infoPanel">
-      <div id="infoMessage">
-        <!-- Filled dynamically by JavaScript -->
+  <section class="card">
+    <div class="gauge">
+      <svg viewBox="0 0 200 200" aria-hidden="true">
+        <circle class="track" cx="100" cy="100" r="84"/>
+        <circle id="gaugeArc" class="arc" cx="100" cy="100" r="84"/>
+      </svg>
+      <div class="gauge-txt">
+        <span id="bigVal">0.00</span>
+        <small>Mbps</small>
+        <em id="bigLabel">Ready</em>
       </div>
     </div>
 
-    <!-- Extra Educational/Explainability Card (Classic Google Card style) -->
-    <div style="background-color: var(--card-bg); border: 1px solid var(--border-color); border-radius: 12px; padding: 24px; font-size: 13.5px; color: var(--text-secondary); line-height: 1.6;">
-      <h3 style="color: var(--text-primary); font-size: 15px; font-weight: 600; margin-bottom: 8px;">About this Speed Tester</h3>
-      <p style="margin-bottom: 12px;">
-        Many speed testers in South Asia or emerging markets route requests to <strong>BDIX (Bangladesh Internet Exchange)</strong> or local ISP caching servers. While this shows extremely high speeds (often matching your router link speed), it does not reflect your actual speed when browsing global websites like YouTube, Netflix, GitHub, or international cloud servers.
-      </p>
-      <p>
-        This tool uses <strong>direct international CDN files</strong> hosted on Cloudflare, Fastly/jsDelivr, and Google to perform the test. Because CDNs are the backbone of the global internet, downloading from them gives you a 100% accurate measurement of your <strong>real-world international browsing and streaming speed</strong>.
-      </p>
+    <div class="bar"><i id="bar"></i></div>
+
+    <div class="grid">
+      <div><span>Download</span><b id="dlVal">--</b><small>Mbps</small></div>
+      <div><span>Upload</span><b id="ulVal">--</b><small>Mbps</small></div>
+      <div><span>Ping</span><b id="pingVal">--</b><small>ms</small></div>
+      <div><span>Jitter</span><b id="jitVal">--</b><small>ms</small></div>
     </div>
 
-    <!-- Footer Section -->
-    <div class="footer">
-      <div class="footer-links">
-        <a href="https://github.com/huvantiofficial-code/Wifi-Checker-Open-Source-" target="_blank">GitHub Repository</a>
-        <span>•</span>
-        <a href="#" onclick="alert('This open source speed test measures genuine global bandwidth without using fake cache servers. Built with pure client-side HTML5/JS.'); return false;">Disclaimer</a>
-      </div>
-      <div>Wifi Checker Open Source © 2026. Made with Google UI Guidelines.</div>
+    <button id="btn" class="btn">Start</button>
+
+    <div class="meta">
+      <div><span>Server</span><b id="serverName">Auto</b><i id="serverGeo"></i></div>
+      <div><span>IP</span><b id="ipVal">--</b></div>
+      <div><span>ISP</span><b id="ispVal">--</b></div>
     </div>
 
-  </div>
+    <div class="share" id="shareRow" hidden>
+      <button id="copyBtn" class="link">Copy result</button>
+    </div>
+  </section>
 
-  <!-- Link our JS engine -->
-  <script src="app.js"></script>
+  <footer>
+    <a href="https://github.com/huvantiofficial-code/Wifi-Checker-Open-Source-" target="_blank" rel="noopener">Source</a>
+  </footer>
+</main>
+
+<script src="servers.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

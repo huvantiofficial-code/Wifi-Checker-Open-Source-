@@ -1,41 +1,39 @@
-# Wifi Checker - Open Source Speed Tester
+# Wifi Checker
 
-A high-quality, lightweight, pure client-side Internet Speed Test tool designed with Google's Material Design guidelines.
+Open source internet speed test in the browser. Download, upload, ping, jitter — no backend, no build step.
 
-This speed tester is specifically built to measure **real international internet speed** by bypassing local caching networks (like BDIX loops), routing measurements through global high-performance CDN edges (Cloudflare, jsDelivr Fastly, and Google Hosted Libraries).
+## Run
 
-## 🚀 Key Features
+Open `index.html`, or host the folder on GitHub Pages / Netlify / Vercel.
 
-*   **Real Server Testing (No BDIX):** Avoids false high-speed readouts caused by ISP local cache loops. It tests your connection against global edge servers, showing what you actually get when accessing international content (Netflix, YouTube, GitHub, AWS, etc.).
-*   **Highly Accurate Measurements:**
-    *   **Latency & Jitter:** Performs multiple sequential latency checks and calculates physical ping along with true Jitter variation in milliseconds.
-    *   **Download Speed:** Uses multi-threaded streaming fetches with custom cache-busting parameters to fully saturate your download capacity.
-    *   **Upload Speed:** Uses parallel `XMLHttpRequest` POST requests to global REST endpoints with real-time uploading progress tracking.
-*   **Google Search UI Style:** Fully modeled after the clean, minimalist Google Speed Test card widget. Includes a circular SVG gauge speed indicator and live pulsing indicators.
-*   **Modern Work Sans Typography:** Completely loaded with Google's open-source `Work Sans` font family for crisp legibility.
-*   **No Backend Needed:** Works entirely in the user's browser with no backend dependencies, meaning zero hosting overhead and absolute client-side privacy.
+## Servers
 
-## 🛠️ How it Works
+- **Cloudflare** — `speed.cloudflare.com` (`__down`, `__up`, `meta`), anycast global edge.
+- **LibreSpeed** — 40+ public backends (`garbage.php`, `empty.php`, `getIP.php` with `cors=true`), from the [LibreSpeed server list](https://librespeed.org/backend-servers/servers.php).
 
-1.  **Latency Phase (Ping & Jitter):**
-    Probes standard edge points sequentially. The true ping is identified as the minimum round-trip time (RTT), and jitter is determined using the standard network formula:
-    $$\text{Jitter} = \frac{\sum_{i=1}^{n-1} |RTT_{i+1} - RTT_i|}{n-1}$$
-2.  **Download Phase:**
-    Spawns concurrent chunk-streaming workers that pull data continuously from high-speed, CORS-configured libraries on global CDNs. Samples are collected every 100ms using a rolling average window to update the needle gauge smoothly.
-3.  **Upload Phase:**
-    Generates a secure cryptographically random block of bytes (preventing intermediate compression optimizations) and POSTs them across concurrent connections. Listens to direct socket upload events to evaluate transmission speeds accurately.
+`Auto` probes a spread of candidates and picks the lowest ping. Any server can be chosen manually from the dropdown.
 
-## 📦 Getting Started
+## Method
 
-Since this is a fully standalone web application, you can run it instantly:
+| Phase | How |
+| --- | --- |
+| Ping / jitter | 10 requests, first discarded; ping = min RTT (Performance API when available), jitter = mean absolute delta |
+| Download | 6 parallel streams, 10 s, 1.5 s grace before measuring |
+| Upload | 3 parallel XHR streams, 10 s, 2.5 s grace |
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/huvantiofficial-code/Wifi-Checker-Open-Source-.git
-    ```
-2.  **Open the application:**
-    Simply double-click the `index.html` file in your browser, or host it on free services like **GitHub Pages**, **Vercel**, or **Netlify**.
+Throughput uses a 1.06 overhead factor to account for TCP/IP + TLS framing (LibreSpeed default).
 
-## 📄 License
+Tuning lives in `CFG` at the top of `app.js`; server list in `servers.js`.
 
-This project is licensed under the MIT License. Contributions and forks are highly welcome!
+## Files
+
+```
+index.html   markup
+style.css    styles
+app.js       test engine
+servers.js   server list
+```
+
+## License
+
+MIT. Server list adapted from LibreSpeed (LGPLv3).
