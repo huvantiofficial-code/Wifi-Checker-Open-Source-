@@ -72,6 +72,9 @@
     'Frankfurt, Germany (Clouvider)',
     'London, UK (Clouvider)',
     'Nuremberg, Germany (2)',
+    'Prague, Czechia (CESNET)',
+    'Vilnius, Lithuania (Time4VPS)',
+    'Bari, Italy (GARR)',
     'New York, USA (Clouvider)',
     'Los Angeles, USA (Clouvider)',
     'Johannesburg, South Africa (HostAfrica)'
